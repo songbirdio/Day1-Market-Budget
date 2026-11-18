@@ -1036,7 +1036,6 @@
           items = [];
           budget = 0;
         }
-        // Make sure every saved item has an id (older saves won't have one)
         items = items.map((it) => (it.id ? it : { ...it, id: uid() }));
         if (budget > 0) budgetInput.value = budget;
       }
@@ -1050,7 +1049,6 @@
         }
       }
 
-      // A unique id per item, so removing the right one is always safe
       function uid() {
         return crypto.randomUUID
           ? crypto.randomUUID()
@@ -1060,14 +1058,12 @@
       /* ------------------------------------------------------------------
          4. HELPERS
       ------------------------------------------------------------------ */
-      // Turn a number into naira text, e.g. 12500 -> ₦12,500
       function naira(n) {
         return (
           "₦" + Number(n).toLocaleString("en-NG", { maximumFractionDigits: 2 })
         );
       }
 
-      // Slide a small message up from the bottom for ~2.6 seconds
       let toastTimer;
       function toast(message) {
         toastEl.textContent = message;
@@ -1079,12 +1075,10 @@
       /* ------------------------------------------------------------------
          5. RENDER — redraw everything on screen from the data
       ------------------------------------------------------------------ */
-      // --- KEEP TRACK OF PREVIOUS NUMBERS FOR ANIMATION ---
       let prevTotal = 0;
       let prevBudget = 0;
       let prevRemaining = 0;
 
-      // --- THE NUMBER ROLLING ANIMATOR ---
       function animateValue(el, start, end, duration, formatter) {
         if (start === end) {
           el.textContent = formatter(end);
@@ -1094,23 +1088,19 @@
         const step = (timestamp) => {
           if (!startTimestamp) startTimestamp = timestamp;
           const progress = Math.min((timestamp - startTimestamp) / duration, 1);
-          // Easing function (easeOutQuart) for a snappy, premium feel
           const easeProgress = 1 - Math.pow(1 - progress, 4);
           const current = Math.floor(easeProgress * (end - start) + start);
-
           el.textContent = formatter(current);
-
           if (progress < 1) {
             window.requestAnimationFrame(step);
           } else {
-            el.textContent = formatter(end); // Ensure exact final number
+            el.textContent = formatter(end);
           }
         };
         window.requestAnimationFrame(step);
       }
 
       function render() {
-        // Add up every item's quantity x price
         let total = 0;
         items.forEach(function (item) {
           total += item.qty * item.price;
@@ -1120,7 +1110,6 @@
         const isOver = budget > 0 && total > budget;
         const percent = budget > 0 ? (total / budget) * 100 : 0;
 
-        // --- TRIGGER ANIMATIONS ---
         animateValue(totalEl, prevTotal, total, 600, naira);
         animateValue(budgetOut, prevBudget, budget, 600, (val) =>
           budget > 0 ? naira(val) : "—",
@@ -1133,17 +1122,13 @@
           (val) => (val < 0 ? "-" : "") + naira(Math.abs(val)),
         );
 
-        // Save current values for the next time render() runs
         prevTotal = total;
         prevBudget = budget;
         prevRemaining = remaining;
 
         remainingEl.classList.toggle("negative", remaining < 0);
-
-        // Progress bar never goes past 100% width
         barFill.style.width = Math.min(100, percent) + "%";
 
-        // Little pill in the corner of the summary
         if (budget <= 0) {
           budgetPill.textContent = "No budget set";
         } else if (isOver) {
@@ -1152,14 +1137,10 @@
           budgetPill.textContent = Math.round(percent) + "% used";
         }
 
-        // Turn the summary red when over budget
         summaryEl.classList.toggle("over", isOver);
-
-        // Item counter
         countBadge.textContent =
           items.length + (items.length === 1 ? " item" : " items");
 
-        // Draw the list
         if (items.length === 0) {
           listDiv.innerHTML =
             '<div class="empty">No items yet. Add your first one above.</div>';
@@ -1168,11 +1149,9 @@
 
         listDiv.innerHTML = "";
 
-        // We use a for loop here so we can get the index for the stagger effect
         items.forEach(function (item, index) {
           const row = document.createElement("div");
           row.className = "item";
-          // Pass the index to CSS so it knows how long to wait before animating in
           row.style.setProperty("--i", index);
 
           const left = document.createElement("div");
@@ -1201,11 +1180,9 @@
           del.setAttribute("aria-label", "Remove " + item.name);
 
           del.addEventListener("click", function () {
-            // Animate the row out before removing it from the array
             row.style.transition = "all 0.2s ease";
             row.style.opacity = "0";
             row.style.transform = "translateX(20px)";
-
             setTimeout(() => {
               items = items.filter((i) => i.id !== item.id);
               save();
@@ -1215,19 +1192,319 @@
 
           right.appendChild(cost);
           right.appendChild(del);
-
           row.appendChild(left);
           row.appendChild(right);
           listDiv.appendChild(row);
         });
       }
-      // 7. NORMAL APP EVENTS
-      // When the budget box changes, update the budget
+
+      /* ==================================================================
+         6. VOICE — the Siri-style orb
+         ================================================================== */
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
+      let recognition = null;
+      let listening = false;
+      let cancelled = false;
+      let heardText = "";
+
+      function setTranscript(text, isHint) {
+        voiceTranscript.textContent = text;
+        voiceTranscript.classList.toggle("hint", !!isHint);
+      }
+      function openSheet() {
+        voiceSheet.hidden = false;
+      }
+      function closeSheet() {
+        voiceSheet.hidden = true;
+      }
+
+      const WORD_NUMBERS = {
+        zero: 0,
+        one: 1,
+        two: 2,
+        three: 3,
+        four: 4,
+        five: 5,
+        six: 6,
+        seven: 7,
+        eight: 8,
+        nine: 9,
+        ten: 10,
+        eleven: 11,
+        twelve: 12,
+        thirteen: 13,
+        fourteen: 14,
+        fifteen: 15,
+        sixteen: 16,
+        seventeen: 17,
+        eighteen: 18,
+        nineteen: 19,
+        twenty: 20,
+        thirty: 30,
+        forty: 40,
+        fifty: 50,
+        sixty: 60,
+        seventy: 70,
+        eighty: 80,
+        ninety: 90,
+      };
+
+      function parseAmount(text) {
+        if (!text) return null;
+        const clean = text
+          .toLowerCase()
+          .replace(/₦/g, " ")
+          .replace(/,/g, "")
+          .replace(/\bnaira(s)?\b/g, " ")
+          .replace(/-/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!clean) return null;
+        let total = 0,
+          current = 0,
+          found = false;
+        clean.split(" ").forEach(function (token) {
+          const digit = token.match(/^(\d+(?:\.\d+)?)(k|m)?$/);
+          if (digit) {
+            let value = parseFloat(digit[1]);
+            if (digit[2] === "k") value *= 1000;
+            if (digit[2] === "m") value *= 1000000;
+            current += value;
+            found = true;
+            return;
+          }
+          if (token in WORD_NUMBERS) {
+            current += WORD_NUMBERS[token];
+            found = true;
+            return;
+          }
+          if (token === "hundred") {
+            current = (current || 1) * 100;
+            found = true;
+            return;
+          }
+          if (token === "thousand" || token === "k") {
+            total += (current || 1) * 1000;
+            current = 0;
+            found = true;
+            return;
+          }
+          if (token === "million" || token === "m") {
+            total += (current || 1) * 1000000;
+            current = 0;
+            found = true;
+            return;
+          }
+          if (token === "billion") {
+            total += (current || 1) * 1000000000;
+            current = 0;
+            found = true;
+            return;
+          }
+        });
+        const value = total + current;
+        return found && value > 0 ? value : null;
+      }
+
+      function startListening() {
+        if (!SpeechRecognition) {
+          toast("Voice isn't supported here — type your budget instead.");
+          return;
+        }
+        if (listening) return;
+        cancelled = false;
+        heardText = "";
+        recognition = new SpeechRecognition();
+        recognition.lang = "en-NG";
+        recognition.interimResults = true;
+        recognition.continuous = false;
+        recognition.maxAlternatives = 1;
+
+        let triedFallback = false;
+        setTranscript(
+          "Say something like “My budget is twenty thousand naira”",
+          true,
+        );
+
+        recognition.onstart = function () {
+          listening = true;
+          orbBtn.classList.add("listening");
+          orbHint.textContent = "Listening…";
+          voiceStatus.textContent = "Listening…";
+          openSheet();
+        };
+
+        recognition.onresult = function (event) {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const text = event.results[i][0].transcript;
+            if (event.results[i].isFinal) heardText += text + " ";
+            else interim += text;
+          }
+          setTranscript((heardText + interim).trim(), false);
+        };
+
+        recognition.onerror = function (event) {
+          if (cancelled) return;
+          if (event.error === "language-not-supported" && !triedFallback) {
+            triedFallback = true;
+            recognition.lang = "en-US";
+            try {
+              recognition.start();
+            } catch (e) {}
+            return;
+          }
+          if (event.error === "no-speech")
+            toast("I didn't hear anything. Tap the orb and try again.");
+          else if (event.error === "not-allowed")
+            toast("Microphone blocked. Allow it in your browser settings.");
+          else if (event.error === "network")
+            toast("Voice isn't available right now. Please type instead.");
+          else if (event.error !== "aborted")
+            toast("Voice error: " + event.error);
+          finishListening();
+        };
+
+        recognition.onend = function () {
+          finishListening();
+        };
+        try {
+          recognition.start();
+        } catch (e) {
+          toast("Could not start the mic. Try again.");
+        }
+      }
+
+      function finishListening() {
+        listening = false;
+        orbBtn.classList.remove("listening");
+        orbHint.textContent = "Tap to speak";
+        if (cancelled) {
+          cancelled = false;
+          return;
+        }
+        handleHeardText(heardText);
+      }
+
+      function handleHeardText(text) {
+        const clean = (text || "").trim();
+        if (!clean) {
+          closeSheet();
+          return;
+        }
+        const amount = parseAmount(clean);
+        if (amount) {
+          budget = amount;
+          budgetInput.value = amount;
+          save();
+          render();
+          closeSheet();
+          toast("Budget set to " + naira(amount));
+          budgetInput.focus({ preventScroll: true });
+          budgetInput.blur();
+          return;
+        }
+        voiceStatus.textContent = "No amount found";
+        setTranscript("I heard: “" + clean + "”. Try “twenty thousand”.", true);
+        toast("I couldn't find a number. Try “my budget is 20 thousand”.");
+        setTimeout(closeSheet, 3200);
+      }
+
+      orbBtn.addEventListener("click", function () {
+        if (listening) {
+          try {
+            recognition.stop();
+          } catch (e) {}
+        } else {
+          startListening();
+        }
+      });
+
+      voiceStop.addEventListener("click", function () {
+        if (!listening) {
+          closeSheet();
+          return;
+        }
+        try {
+          recognition.stop();
+        } catch (e) {}
+      });
+
+      voiceCancel.addEventListener("click", function () {
+        cancelled = true;
+        if (recognition) {
+          try {
+            recognition.abort();
+          } catch (e) {}
+        }
+        finishListening();
+        closeSheet();
+      });
+
+      document.addEventListener("focusin", function (e) {
+        if (e.target.matches("input")) document.body.classList.add("typing");
+      });
+      document.addEventListener("focusout", function (e) {
+        if (e.target.matches("input")) document.body.classList.remove("typing");
+      });
+
+      /* ==================================================================
+         7. NORMAL APP EVENTS
+         ================================================================== */
+      // Budget update
       budgetInput.addEventListener("input", function () {
         budget = Number(budgetInput.value) || 0;
         save();
         render();
       });
+
+      // ADD ITEM (This was the missing piece!)
+      form.addEventListener("submit", function (event) {
+        event.preventDefault(); // Stops the page from refreshing
+
+        const name = nameInput.value.trim();
+        const qty = Number(qtyInput.value);
+        const price = Number(priceInput.value);
+        if (!name || qty <= 0 || price < 0) return;
+
+        items.push({ id: uid(), name: name, qty: qty, price: price });
+        save();
+        render();
+
+        nameInput.value = "";
+        qtyInput.value = 1;
+        priceInput.value = "";
+        nameInput.focus();
+      });
+
+      // CLEAR LIST
+      clearBtn.addEventListener("click", function () {
+        if (items.length === 0) return;
+        if (confirm("Remove all items from your list?")) {
+          items = [];
+          save();
+          render();
+        }
+      });
+
+      // STICKY HEADER SCROLL LOGIC
+      const mainHeader = $("mainHeader");
+      window.addEventListener(
+        "scroll",
+        () => {
+          if (window.scrollY > 20) {
+            mainHeader.classList.add("scrolled");
+          } else {
+            mainHeader.classList.remove("scrolled");
+          }
+        },
+        { passive: true },
+      );
+
+      /* 8. Start the app */
+      load();
+      render();
     </script>
   </body>
 </html>
